@@ -3,7 +3,6 @@ package org.matrix.TEESimulator.interception.keystore.shim
 import android.hardware.security.keymint.Algorithm
 import android.hardware.security.keymint.KeyParameter
 import android.hardware.security.keymint.KeyParameterValue
-import android.hardware.security.keymint.KeyPurpose
 import android.hardware.security.keymint.Tag
 import android.os.IBinder
 import android.os.Parcel
@@ -159,6 +158,9 @@ class KeyMintSecurityLevelInterceptor(
             val metadata: KeyMetadata =
                 reply.readTypedObject(KeyMetadata.CREATOR)
                     ?: return TransactionResult.SkipTransaction
+            KeyMintAttestation(
+                metadata.authorizations?.map { it.keyParameter }?.toTypedArray() ?: emptyArray()
+            )
             val originalChain =
                 CertificateHelper.getCertificateChain(metadata)
                     ?: return TransactionResult.SkipTransaction
@@ -241,10 +243,7 @@ class KeyMintSecurityLevelInterceptor(
                 )
                 val params = data.createTypedArray(KeyParameter.CREATOR)!!
                 val parsedParams = KeyMintAttestation(params)
-                val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
-                val isAttestKeyRequest =
-                    parsedParams.purpose.size == 1 &&
-                        parsedParams.purpose.contains(KeyPurpose.ATTEST_KEY)
+                val isAttestKeyRequest = parsedParams.isAttestKey()
 
                 val needsSoftwareGeneration =
                     ConfigurationManager.shouldGenerate(callingUid) ||
@@ -253,7 +252,7 @@ class KeyMintSecurityLevelInterceptor(
                             isAttestationKey(KeyIdentifier(callingUid, attestationKey.alias)))
 
                 if (needsSoftwareGeneration) {
-                    return doSoftwareKeyGen(callingUid, keyDescriptor, attestationKey, parsedParams, keyId, isAttestKeyRequest)
+                    return doSoftwareKeyGen(callingUid, keyDescriptor, attestationKey, parsedParams, keyId = KeyIdentifier(callingUid, keyDescriptor.alias), isAttestKeyRequest)
                 } else if (parsedParams.attestationChallenge != null) {
                     val windowUsed = hardwareKeygenWindowCount(callingUid)
                     val concurrentUsed = hardwareKeygenCount(callingUid).get()
@@ -261,13 +260,13 @@ class KeyMintSecurityLevelInterceptor(
                     // Sliding window rate limit
                     if (windowUsed >= MAX_HW_KEYGEN_PER_WINDOW) {
                         SystemLogger.info("[TX_ID: $txId] RATE_LIMITED uid=$callingUid window=$windowUsed/$MAX_HW_KEYGEN_PER_WINDOW concurrent=$concurrentUsed → software fallback")
-                        return doSoftwareKeyGen(callingUid, keyDescriptor, attestationKey, parsedParams, keyId, isAttestKeyRequest)
+                        return doSoftwareKeyGen(callingUid, keyDescriptor, attestationKey, parsedParams, keyId = KeyIdentifier(callingUid, keyDescriptor.alias), isAttestKeyRequest)
                     }
                     // Concurrent cap
                     if (hardwareKeygenCount(callingUid).incrementAndGet() > MAX_CONCURRENT_HW_KEYGEN_PER_UID) {
                         hardwareKeygenCount(callingUid).decrementAndGet()
                         SystemLogger.info("[TX_ID: $txId] CONCURRENT_LIMITED uid=$callingUid window=$windowUsed/$MAX_HW_KEYGEN_PER_WINDOW concurrent=${concurrentUsed + 1}/$MAX_CONCURRENT_HW_KEYGEN_PER_UID → software fallback")
-                        return doSoftwareKeyGen(callingUid, keyDescriptor, attestationKey, parsedParams, keyId, isAttestKeyRequest)
+                        return doSoftwareKeyGen(callingUid, keyDescriptor, attestationKey, parsedParams, keyId = KeyIdentifier(callingUid, keyDescriptor.alias), isAttestKeyRequest)
                     }
                     // Both checks passed — commit the window permit and forward to hardware TEE
                     recordHardwareKeygen(callingUid)
@@ -276,11 +275,11 @@ class KeyMintSecurityLevelInterceptor(
                     return TransactionResult.Continue
                 }
 
-                cleanupKeyData(keyId)
+                cleanupKeyData(KeyIdentifier(callingUid, keyDescriptor.alias))
                 TransactionResult.ContinueAndSkipPost
             }
             .getOrElse {
-                SystemLogger.error("Error during generateKey handling for UID $callingUid.", it)
+                SystemLogger.error("No key pair generated for UID $callingUid.", it)
                 TransactionResult.ContinueAndSkipPost
             }
     }
@@ -477,9 +476,11 @@ class KeyMintSecurityLevelInterceptor(
         }
 
         val generatedKeys = ConcurrentHashMap<KeyIdentifier, GeneratedKeyInfo>()
-        // Caches patched chains to prevent re-generation and signature inconsistencies
+        // A set to quickly identify keys that were generated for attestation purposes.
+        val attestationKeys = ConcurrentHashMap.newKeySet<KeyIdentifier>()
+        // Caches patched certificate chains to prevent re-generation and signature inconsistencies.
         private val patchedChains = ConcurrentHashMap<KeyIdentifier, Array<Certificate>>()
-        private val attestationKeys = ConcurrentHashMap.newKeySet<KeyIdentifier>()
+        // Stores interceptors for active cryptographic operations.
         private val interceptedOperations = ConcurrentHashMap<IBinder, OperationInterceptor>()
 
         fun getGeneratedKeyResponse(keyId: KeyIdentifier): KeyEntryResponse? =
@@ -538,6 +539,10 @@ class KeyMintSecurityLevelInterceptor(
     }
 }
 
+/**
+ * Extension function to convert parsed `KeyMintAttestation` parameters back into an array of
+ * `Authorization` objects for the fake `KeyMetadata`.
+ */
 private fun KeyMintAttestation.toAuthorizations(securityLevel: Int): Array<Authorization> {
     val authList = mutableListOf<Authorization>()
 
