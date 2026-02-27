@@ -9,11 +9,13 @@ import android.os.Looper
 import java.security.Security
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.matrix.TEESimulator.config.ConfigurationManager
+import org.matrix.TEESimulator.core.ConflictDetector
 import org.matrix.TEESimulator.interception.keystore.AbstractKeystoreInterceptor
 import org.matrix.TEESimulator.interception.keystore.Keystore2Interceptor
 import org.matrix.TEESimulator.interception.keystore.KeystoreInterceptor
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
+import org.matrix.TEESimulator.util.PropertySpoofer
 import kotlin.system.exitProcess
 
 /**
@@ -48,8 +50,16 @@ object App {
 
             // Load the package configuration.
             ConfigurationManager.initialize()
+
             // Set up the device's boot key and hash, which are crucial for attestation.
+            // Must be initialized before PropertySpoofer uses them.
             AndroidDeviceUtils.setupBootKeyAndHash()
+
+            // Detect conflicting modules and apps.
+            ConflictDetector.detectConflicts()
+
+            // Apply safe property spoofing.
+            PropertySpoofer.spoofSafeProperties()
 
             // Android ships with a stripped-down Bouncy Castle provider under the name "BC".
             // We must remove the system provider first to ensure the full Bouncy Castle library

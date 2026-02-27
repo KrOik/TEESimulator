@@ -56,6 +56,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
+    kotlin {
+        jvmToolchain(21)
+    }
     buildFeatures { buildConfig = true }
     externalNativeBuild {
         cmake {
@@ -150,6 +153,8 @@ androidComponents {
                 archiveFileName.set(zipFileName)
                 destinationDirectory.set(project.rootDir.resolve("out"))
                 from(tempModuleDir) // Zip the entire contents of the staging directory.
+                isPreserveFileTimestamps = false
+                isReproducibleFileOrder = true
             }
 
         // Task 3: A helper function to create installation tasks for different root providers.

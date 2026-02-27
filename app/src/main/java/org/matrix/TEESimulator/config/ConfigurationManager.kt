@@ -3,13 +3,16 @@ package org.matrix.TEESimulator.config
 import android.content.pm.IPackageManager
 import android.os.Build
 import android.os.FileObserver
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.ServiceManager
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.attestation.DeviceAttestationService
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.pki.KeyBoxManager
+import org.matrix.TEESimulator.util.PropertySpoofer
 
 /**
  * Manages application configuration, including which packages to process, what operation mode to
@@ -28,13 +31,7 @@ object ConfigurationManager {
         GENERATE,
     }
 
-    // --- Configuration Paths ---
-    const val CONFIG_PATH = "/data/adb/tricky_store"
-    private const val TARGET_PACKAGES_FILE = "target.txt"
-    private const val TEE_STATUS_FILE = "tee_status.txt"
-    private const val PATCH_LEVEL_FILE = "security_patch.txt"
-    private const val DEFAULT_KEYBOX_FILE = "keybox.xml"
-    private val configRoot = File(CONFIG_PATH)
+    private val configRoot = File(AppConfig.CONFIG_PATH)
 
     // --- In-Memory Configuration State ---
     @Volatile private var packageModes = mapOf<String, Mode>()
@@ -42,9 +39,13 @@ object ConfigurationManager {
     @Volatile private var isTeeBroken: Boolean? = null
     @Volatile private var globalCustomPatchLevel: CustomPatchLevel? = null
     @Volatile private var packagePatchLevels = mapOf<String, CustomPatchLevel>()
+    @Volatile private var spoofProperties = mapOf<String, String>()
 
     // Cache for UID to package name resolution.
     private val uidToPackagesCache = ConcurrentHashMap<Int, Array<String>>()
+
+    private const val RECOVERY_DELAY_MS = 2000L
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * Initializes the configuration manager by loading all settings from disk and starting the file
@@ -65,14 +66,24 @@ object ConfigurationManager {
             SystemLogger.info("PackageManagerService is ready.")
         }
 
-        // Initial load of all configuration files.
-        loadTargetPackages(File(configRoot, TARGET_PACKAGES_FILE))
-        loadPatchLevelConfig(File(configRoot, PATCH_LEVEL_FILE))
-        storeTeeStatus() // Check and store the current TEE status.
-
-        // Start watching for any subsequent file changes.
+        // Start watching BEFORE loading to avoid race conditions during startup
         ConfigObserver.startWatching()
+
+        // Initial load of all configuration files.
+        reloadAllConfigs()
+
         SystemLogger.info("Configuration initialized and file observer started.")
+    }
+
+    private fun reloadAllConfigs() {
+        if (!configRoot.exists()) {
+            SystemLogger.warning("Config root missing during reload: ${configRoot.absolutePath}")
+            return
+        }
+        loadTargetPackages(File(configRoot, AppConfig.TARGET_PACKAGES_FILE))
+        loadPatchLevelConfig(File(configRoot, AppConfig.PATCH_LEVEL_FILE))
+        loadSpoofConfig(File(configRoot, AppConfig.SPOOF_FILE))
+        storeTeeStatus() // Check and store the current TEE status.
     }
 
     /**
@@ -84,7 +95,7 @@ object ConfigurationManager {
      */
     fun getKeyboxFileForUid(uid: Int): String {
         val packages = getPackagesForUid(uid)
-        return packages.firstNotNullOfOrNull { pkg -> packageKeyboxes[pkg] } ?: DEFAULT_KEYBOX_FILE
+        return packages.firstNotNullOfOrNull { pkg -> packageKeyboxes[pkg] } ?: AppConfig.DEFAULT_KEYBOX_FILE
     }
 
     /** Determines if the certificate for a given UID needs to be patched. */
@@ -143,7 +154,7 @@ object ConfigurationManager {
 
         val newModes = mutableMapOf<String, Mode>()
         val newKeyboxes = mutableMapOf<String, String>()
-        var currentKeybox = DEFAULT_KEYBOX_FILE
+        var currentKeybox = AppConfig.DEFAULT_KEYBOX_FILE
         val keyboxRegex = Regex("^\\[([a-zA-Z0-9_.-]+\\.xml)]$")
 
         try {
@@ -280,9 +291,40 @@ object ConfigurationManager {
         }
     }
 
+    /**
+     * Loads and parses the `spoof.txt` file, which defines custom system properties to be spoofed.
+     * The file format is key=value.
+     */
+    private fun loadSpoofConfig(file: File) {
+        if (!file.exists()) {
+            spoofProperties = emptyMap()
+            // If the file is missing, we revert to default spoofing.
+            PropertySpoofer.spoofSafeProperties(spoofProperties)
+            return
+        }
+
+        try {
+            val newProperties = mutableMapOf<String, String>()
+            file.readLines().forEach { line ->
+                val trimmedLine = line.trim()
+                if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
+
+                val parts = trimmedLine.split('=', limit = 2)
+                if (parts.size == 2) {
+                    newProperties[parts[0].trim()] = parts[1].trim()
+                }
+            }
+            spoofProperties = newProperties
+            SystemLogger.info("Loaded ${newProperties.size} custom spoof properties.")
+            PropertySpoofer.spoofSafeProperties(spoofProperties)
+        } catch (e: Exception) {
+            SystemLogger.error("Failed to load or parse ${file.name}", e)
+        }
+    }
+
     /** Checks the device's TEE status and writes the result to a file for persistence. */
     private fun storeTeeStatus() {
-        val statusFile = File(configRoot, TEE_STATUS_FILE)
+        val statusFile = File(configRoot, AppConfig.TEE_STATUS_FILE)
         isTeeBroken = !DeviceAttestationService.isTeeFunctional
         try {
             statusFile.writeText("tee_broken=$isTeeBroken")
@@ -294,7 +336,7 @@ object ConfigurationManager {
 
     /** Loads the TEE status from the file. */
     private fun loadTeeStatus() {
-        val statusFile = File(configRoot, TEE_STATUS_FILE)
+        val statusFile = File(configRoot, AppConfig.TEE_STATUS_FILE)
         isTeeBroken =
             if (statusFile.exists()) {
                 statusFile.readText().trim() == "tee_broken=true"
@@ -304,36 +346,71 @@ object ConfigurationManager {
     }
 
     /**
-     * A FileObserver that monitors the configuration directory for changes and triggers reloads of
-     * the relevant settings.
+     * A Self-Healing FileObserver that survives directory destruction.
+     * Monitors the configuration directory for changes and triggers reloads of the relevant settings.
      */
-    private object ConfigObserver : FileObserver(configRoot, CLOSE_WRITE or MOVED_TO or DELETE) {
+    private object ConfigObserver : FileObserver(configRoot, CLOSE_WRITE or MOVED_TO or DELETE or DELETE_SELF) {
+        
         override fun onEvent(event: Int, path: String?) {
-            path ?: return
-            SystemLogger.info("Configuration file change detected: $path (event: $event)")
+            // Mask the event to get the low-order bits
+            val type = event and ALL_EVENTS
 
-            val file = if (event != DELETE) File(configRoot, path) else null
+            // 1. Handle directory destruction (DELETE_SELF)
+            if (type == DELETE_SELF && path == null) {
+                SystemLogger.error("CRITICAL: Configuration directory deleted! Stopping observer and scheduling recovery.")
+                stopWatching()
+                scheduleRecovery()
+                return
+            }
+
+            // 2. Ignore unrelated events
+            if (path == null) return
+
+            SystemLogger.info("Configuration file change detected: $path (event: $event)")
+            val file = File(configRoot, path)
+
+            // 3. Handle file changes
             when (path) {
-                TARGET_PACKAGES_FILE -> file?.let { loadTargetPackages(it) }
-                    ?: SystemLogger.warning("$TARGET_PACKAGES_FILE was deleted.")
-                PATCH_LEVEL_FILE -> file?.let { loadPatchLevelConfig(it) }
-                    ?: SystemLogger.warning("$PATCH_LEVEL_FILE was deleted.")
-                // Any change to an XML file is assumed to be a keybox.
-                // The cache in KeyBoxManager will handle reloading it on its next use.
-                else ->
+                AppConfig.TARGET_PACKAGES_FILE -> if (type != DELETE) loadTargetPackages(file)
+                AppConfig.PATCH_LEVEL_FILE -> if (type != DELETE) loadPatchLevelConfig(file)
+                AppConfig.SPOOF_FILE -> loadSpoofConfig(File(configRoot, AppConfig.SPOOF_FILE))
+                else -> {
                     if (path.endsWith(".xml")) {
-                        SystemLogger.info(
-                            "Keybox file $path may have changed. It will be reloaded on next access."
-                        )
+                        SystemLogger.info("Keybox file change: $path. Invalidating cache.")
                         KeyBoxManager.invalidateCache(path)
+                        // Invalidate cached certificate chains in the interceptor
                         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
-                            // Patched chains are stale; generated keys survive rotation
-                            org.matrix.TEESimulator.interception.keystore.shim
-                                .KeyMintSecurityLevelInterceptor
-                                .invalidatePatchedChains("keybox change: $path")
+                            try {
+                                val interceptorClass = Class.forName(AppConfig.KEYMINT_INTERCEPTOR_CLASS)
+                                val method = interceptorClass.getMethod(AppConfig.INVALIDATE_PATCHED_CHAINS_METHOD, String::class.java)
+                                method.invoke(null, "keybox change: $path")
+                            } catch (e: Exception) {
+                                SystemLogger.warning("Could not invalidate patched chains: ${e.message}")
+                            }
                         }
                     }
+                }
             }
+        }
+
+        /**
+         * Polls until the directory is recreated, then restarts the observer.
+         */
+        private fun scheduleRecovery() {
+            mainHandler.postDelayed(object : Runnable {
+                override fun run() {
+                    if (configRoot.exists() && configRoot.isDirectory) {
+                        SystemLogger.info("Configuration directory restored. Resurrecting observer...")
+                        // Reload all configs to ensure state is fresh
+                        reloadAllConfigs()
+                        // Restart watching
+                        startWatching() 
+                    } else {
+                        SystemLogger.warning("Waiting for config directory recovery...")
+                        mainHandler.postDelayed(this, RECOVERY_DELAY_MS)
+                    }
+                }
+            }, RECOVERY_DELAY_MS)
         }
     }
 
