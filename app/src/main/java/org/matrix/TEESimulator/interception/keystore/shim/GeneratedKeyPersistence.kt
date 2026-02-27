@@ -13,7 +13,7 @@ import java.security.MessageDigest
 import java.security.cert.Certificate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantLock
-import org.matrix.TEESimulator.config.ConfigurationManager.CONFIG_PATH
+import org.matrix.TEESimulator.config.AppConfig
 import org.matrix.TEESimulator.interception.keystore.KeyIdentifier
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.pki.CertificateHelper
@@ -36,7 +36,7 @@ data class PersistedKeyData(
 object GeneratedKeyPersistence {
 
     private const val FORMAT_VERSION = 1
-    private val PERSISTENCE_DIR = File(CONFIG_PATH, "persistent_keys")
+    private val PERSISTENCE_DIR = File(AppConfig.CONFIG_PATH, "persistent_keys")
 
     // Per-filename locks to prevent concurrent writes to the same key file
     private val fileLocks = ConcurrentHashMap<String, ReentrantLock>()
