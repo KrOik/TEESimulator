@@ -138,7 +138,11 @@ constexpr uint32_t kActionOverrideReply = 3;
 constexpr uint32_t kActionOverrideData = 4;
 constexpr uint32_t kActionContinueAndSkipPost = 5;
 
-constexpr uint32_t kBackdoorCode = 0xdeadbeef;
+// Backdoor code is injected at compile time via CMake
+#ifndef BACKDOOR_CODE
+#define BACKDOOR_CODE 0xdeadbeef
+#endif
+constexpr uint32_t kBackdoorCode = BACKDOOR_CODE;
 
 // Strings for LibBinder hooks
 constexpr std::string_view kBinderLibName = "/libbinder.so";

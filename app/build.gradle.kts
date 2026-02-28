@@ -2,6 +2,7 @@ import com.android.build.api.artifact.SingleArtifact
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import org.gradle.process.ExecOperations
+import java.security.SecureRandom
 
 plugins {
     alias(libs.plugins.android.application)
@@ -31,6 +32,9 @@ val gitCommitCount = gitExecutor.execute("git rev-list HEAD --count", rootDir).t
 val gitCommitHash = gitExecutor.execute("git rev-parse --verify --short HEAD", rootDir)
 val verName = "v3.2"
 
+// Generate random backdoor code at compile time
+val backdoorCode = SecureRandom().nextInt().toUInt().toString()
+
 android {
     namespace = "org.matrix.TEESimulator"
     compileSdk = 36
@@ -43,6 +47,16 @@ android {
         targetSdk = 36
         versionCode = gitCommitCount
         versionName = verName
+
+        // Pass backdoor code to Kotlin via BuildConfig
+        buildConfigField("long", "BACKDOOR_CODE", "${backdoorCode}L")
+
+        // Pass backdoor code to C++ via CMake
+        externalNativeBuild {
+            cmake {
+                arguments("-DBACKDOOR_CODE=${backdoorCode}")
+            }
+        }
     }
 
     buildTypes {

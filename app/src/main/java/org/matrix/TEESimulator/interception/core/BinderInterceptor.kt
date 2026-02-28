@@ -3,6 +3,7 @@ package org.matrix.TEESimulator.interception.core
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
+import org.matrix.TEESimulator.BuildConfig
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.logging.SystemLogger
 
@@ -245,7 +246,8 @@ abstract class BinderInterceptor : Binder() {
 
         // --- Backdoor Codes ---
         // Special transaction code to ask the injected library for its backdoor binder.
-        private const val BACKDOOR_TRANSACTION_CODE = 0xdeadbeef.toInt()
+        // This value is injected at compile time via BuildConfig
+        private val BACKDOOR_TRANSACTION_CODE = BuildConfig.BACKDOOR_CODE.toInt()
         // Code used by the backdoor binder to register a new interceptor.
         private const val REGISTER_INTERCEPTOR_CODE = 1
         // Code used by the backdoor binder to unregister an interceptor.

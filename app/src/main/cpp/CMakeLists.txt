@@ -6,6 +6,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
 
+# Receive backdoor code from Gradle
+if(NOT DEFINED BACKDOOR_CODE)
+    set(BACKDOOR_CODE "0xdeadbeef")
+    message(WARNING "BACKDOOR_CODE not defined, using default: ${BACKDOOR_CODE}")
+endif()
+add_compile_definitions(BACKDOOR_CODE=${BACKDOOR_CODE})
+
 # LSPlt configuration
 OPTION(LSPLT_BUILD_SHARED OFF)
 add_subdirectory(external/LSPlt/lsplt/src/main/jni)
