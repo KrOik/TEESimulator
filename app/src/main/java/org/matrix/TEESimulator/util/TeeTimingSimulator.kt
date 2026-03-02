@@ -110,31 +110,20 @@ object TeeTimingSimulator {
         return baseDelay
     }
     
-    /**
-     * Generates a delay that follows a realistic distribution.
-     * Real TEE operations have a log-normal-ish distribution,
-     * not a uniform distribution.
-     */
     private fun generateRealisticDelay(minMs: Long, maxMs: Long): Long {
         val range = maxMs - minMs
-        
-        // Use a slightly biased distribution (more values near the middle)
-        // Real hardware has consistent timing with occasional outliers
         val random = Random(sessionSeed++)
         
-        // 70% of the time, use a value in the middle 50% of the range
-        // 30% of the time, use full range
-        val delay = if (random.nextDouble() < 0.7) {
-            val quarterRange = range / 4
-            minMs + quarterRange + (random.nextLong() % (range / 2))
-        } else {
-            minMs + (random.nextLong() % range)
-        }
+        val gaussian = random.nextDouble()
+        val logNormalFactor = kotlin.math.exp(gaussian * 0.4)
+        val normalizedDelay = minMs + (logNormalFactor * range / 2.5).toLong()
         
-        // Add small jitter to prevent exact timing patterns
-        val jitter = (random.nextLong() % 5) - 2  // -2 to +2 ms jitter
+        val deviceOffset = (AndroidDeviceUtils.bootKey.firstOrNull()?.toInt()?.and(0xFF) ?: 128) % 8
+        val delayWithOffset = normalizedDelay + deviceOffset
         
-        return (delay + jitter).coerceIn(minMs, maxMs)
+        val jitter = random.nextLong(-3, 4)
+        
+        return (delayWithOffset + jitter).coerceIn(minMs, maxMs)
     }
     
     /**

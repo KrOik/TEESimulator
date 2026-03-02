@@ -19,6 +19,7 @@ import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
 import org.matrix.TEESimulator.util.AndroidDeviceUtils.DO_NOT_REPORT
+import org.matrix.TEESimulator.util.VerifiedBootStateProvider
 
 /**
  * A builder object responsible for constructing the ASN.1 DER-encoded Android Key Attestation
@@ -59,9 +60,9 @@ object AttestationBuilder {
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX] =
             DEROctetString(AndroidDeviceUtils.bootKey)
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_DEVICE_LOCKED_INDEX] =
-            ASN1Boolean.TRUE // deviceLocked: true, for security
+            ASN1Boolean.getInstance(VerifiedBootStateProvider.deviceLocked)
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX] =
-            ASN1Enumerated(0) // verifiedBootState: Verified
+            ASN1Enumerated(VerifiedBootStateProvider.verifiedBootState)
         rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX] =
             DEROctetString(AndroidDeviceUtils.bootHash)
 

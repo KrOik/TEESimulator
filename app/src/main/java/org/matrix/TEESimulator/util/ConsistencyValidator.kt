@@ -12,6 +12,7 @@ data class ConsistencyReport(
     val keyboxScore: Double,
     val moduleHashScore: Double,
     val timingScore: Double,
+    val bootStateScore: Double,
     val issues: List<String>,
     val warnings: List<String>,
     val recommendations: List<String>
@@ -24,6 +25,7 @@ data class ConsistencyReport(
             appendLine("=== TEESimulator Consistency Report ===")
             appendLine("Overall Score: %.1f/10".format(overallScore))
             appendLine("Boot Properties: %.1f/10".format(bootPropertiesScore))
+            appendLine("Boot State: %.1f/10".format(bootStateScore))
             appendLine("Keybox: %.1f/10".format(keyboxScore))
             appendLine("Module Hash: %.1f/10".format(moduleHashScore))
             appendLine("Timing Simulation: %.1f/10".format(timingScore))
@@ -50,11 +52,12 @@ object ConsistencyValidator {
         val recommendations = mutableListOf<String>()
         
         val bootScore = validateBootProperties(issues, warnings, recommendations)
+        val bootStateScore = validateBootState(issues, warnings, recommendations)
         val keyboxScore = validateKeybox(issues, warnings, recommendations)
         val moduleScore = validateModuleHash(issues, warnings, recommendations)
         val timingScore = validateTimingPatterns(issues, warnings, recommendations)
         
-        val overallScore = (bootScore * 0.30 + keyboxScore * 0.35 + moduleScore * 0.20 + timingScore * 0.15)
+        val overallScore = (bootScore * 0.20 + bootStateScore * 0.15 + keyboxScore * 0.30 + moduleScore * 0.20 + timingScore * 0.15)
         
         if (overallScore < 9.0) {
             recommendations.add("Consider updating keybox to hardware attestation certificates")
@@ -69,6 +72,7 @@ object ConsistencyValidator {
         return ConsistencyReport(
             overallScore = overallScore,
             bootPropertiesScore = bootScore,
+            bootStateScore = bootStateScore,
             keyboxScore = keyboxScore,
             moduleHashScore = moduleScore,
             timingScore = timingScore,
@@ -76,6 +80,37 @@ object ConsistencyValidator {
             warnings = warnings,
             recommendations = recommendations
         )
+    }
+    
+    private fun validateBootState(
+        issues: MutableList<String>,
+        warnings: MutableList<String>,
+        recommendations: MutableList<String>
+    ): Double {
+        var score = 10.0
+        
+        val bootConsistency = VerifiedBootStateProvider.validateConsistency()
+        if (!bootConsistency.isValid) {
+            issues.addAll(bootConsistency.issues)
+            score -= 2.0
+        }
+        warnings.addAll(bootConsistency.warnings)
+        
+        val deepValidation = BootPropertyValidator.performDeepValidation()
+        if (!deepValidation.isValid) {
+            issues.addAll(deepValidation.issues)
+            score -= 1.5
+        }
+        warnings.addAll(deepValidation.warnings)
+        
+        if (!deepValidation.vbmetaValid) {
+            score -= 0.5
+        }
+        if (!deepValidation.bootStateConsistent) {
+            score -= 1.0
+        }
+        
+        return score.coerceIn(0.0, 10.0)
     }
     
     private fun validateBootProperties(

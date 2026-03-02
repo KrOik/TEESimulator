@@ -174,6 +174,63 @@ object CertificateChainValidator {
             }
         }
         
+        if (!validateIssuerSubjectDerMatch(chain, issues)) {
+            allValid = false
+        }
+        
+        if (!validateCriticalExtensions(chain, issues)) {
+            allValid = false
+        }
+        
+        return allValid
+    }
+    
+    private fun validateIssuerSubjectDerMatch(chain: List<X509Certificate>, issues: MutableList<String>): Boolean {
+        var allValid = true
+        
+        for (i in 0 until chain.size - 1) {
+            val issuerDer = chain[i].issuerX500Principal.encoded
+            val subjectDer = chain[i + 1].subjectX500Principal.encoded
+            
+            if (!issuerDer.contentEquals(subjectDer)) {
+                issues.add("Certificate $i: Issuer DER encoding does not match Subject DER of cert ${i+1}")
+                SystemLogger.error("DER encoding mismatch at index $i")
+                SystemLogger.debug("  Issuer DER: ${bytesToHex(issuerDer).take(64)}...")
+                SystemLogger.debug("  Subject DER: ${bytesToHex(subjectDer).take(64)}...")
+                allValid = false
+            }
+        }
+        
+        return allValid
+    }
+    
+    private fun bytesToHex(bytes: ByteArray): String {
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+    
+    private fun validateCriticalExtensions(chain: List<X509Certificate>, issues: MutableList<String>): Boolean {
+        var allValid = true
+        
+        chain.forEachIndexed { index, cert ->
+            val certName = if (index == 0) "Leaf" else if (index == chain.size - 1) "Root" else "Intermediate $index"
+            val criticalExtensions = cert.criticalExtensionOIDs
+            
+            if (index < chain.size - 1) {
+                if (criticalExtensions?.contains("2.5.29.19") == false) {
+                    issues.add("$certName certificate missing critical BasicConstraints extension")
+                    allValid = false
+                }
+            }
+            
+            if (index == 0) {
+                val hasKeyUsage = cert.keyUsage != null
+                if (!hasKeyUsage) {
+                    issues.add("$certName certificate missing KeyUsage extension")
+                    allValid = false
+                }
+            }
+        }
+        
         return allValid
     }
     
