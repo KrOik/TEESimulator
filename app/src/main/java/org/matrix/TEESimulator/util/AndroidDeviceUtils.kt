@@ -76,10 +76,16 @@ object AndroidDeviceUtils {
         SystemLogger.debug("Boot key and hash initialization complete.")
     }
 
-    /**
+/**
      * Generic initializer for boot properties like the key and hash. It attempts to read from a
-     * system property first, then from a TEE attestation, and finally falls back to a random value
-     * if neither is available.
+     * system property first, then from persistent storage, then from a TEE attestation, and finally 
+     * falls back to a random value if none is available.
+     *
+     * Priority order:
+     * 1. Persistent storage (ensures consistency across restarts)
+     * 2. System property
+     * 3. TEE attestation cache
+     * 4. Random generation (and save to persistent storage)
      *
      * @param propertyName The name of the system property (e.g., "ro.boot.vbmeta.digest").
      * @param attestationValueProvider A function that supplies the value from a cached attestation.
@@ -91,9 +97,25 @@ object AndroidDeviceUtils {
         attestationValueProvider: () -> ByteArray?,
         expectedSize: Int,
     ): ByteArray {
+        // 0. First, check persistent storage for consistency
+        val storedProps = BootPropertyStore.load()
+        if (storedProps != null) {
+            val storedValue = if (propertyName.contains("public_key_digest")) {
+                storedProps.bootKey.hexToByteArray()
+            } else {
+                storedProps.bootHash.hexToByteArray()
+            }
+            if (storedValue.size == expectedSize) {
+                SystemLogger.debug("Using $propertyName from persistent storage: ${storedValue.toHex()}")
+                return storedValue
+            }
+        }
+        
         // 1. Attempt to get the value from the system property.
         getProperty(propertyName, expectedSize)?.let {
             SystemLogger.debug("Using $propertyName from system property: ${it.toHex()}")
+            // Save to persistent storage for future consistency
+            saveBootPropertyToStore(propertyName, it)
             return it
         }
 
@@ -101,18 +123,45 @@ object AndroidDeviceUtils {
         try {
             attestationValueProvider()?.let {
                 SystemLogger.debug("Using $propertyName from TEE attestation: ${it.toHex()}")
-                setProperty(propertyName, it) // Persist for consistency
+                setProperty(propertyName, it)
+                // Save to persistent storage for future consistency
+                saveBootPropertyToStore(propertyName, it)
                 return it
             }
         } catch (e: Exception) {
             SystemLogger.error("Failed to get $propertyName from attestation.", e)
         }
 
-        // 3. As a final fallback, generate a random value.
+        // 3. As a final fallback, generate a random value and save it.
         return generateRandomBytes(expectedSize).also {
             SystemLogger.debug("Using randomly generated $propertyName: ${it.toHex()}")
             setProperty(propertyName, it)
+            // Save to persistent storage for future consistency
+            saveBootPropertyToStore(propertyName, it)
         }
+    }
+    
+    /**
+     * Saves a boot property value to the persistent store.
+     */
+    private fun saveBootPropertyToStore(propertyName: String, value: ByteArray) {
+        val existing = BootPropertyStore.load()
+        val newProps = if (propertyName.contains("public_key_digest")) {
+            BootProperties(
+                bootKey = value.toHex(),
+                bootHash = existing?.bootHash ?: generateRandomBytes(32).toHex(),
+                timestamp = System.currentTimeMillis(),
+                source = "system_property"
+            )
+        } else {
+            BootProperties(
+                bootKey = existing?.bootKey ?: generateRandomBytes(32).toHex(),
+                bootHash = value.toHex(),
+                timestamp = System.currentTimeMillis(),
+                source = "system_property"
+            )
+        }
+        BootPropertyStore.save(newProps)
     }
 
     /**
@@ -475,60 +524,102 @@ object AndroidDeviceUtils {
         results.distinctBy { it.first }
     }
 
-    // https://cs.android.com/android/platform/superproject/main/+/main:system/security/keystore2/src/maintenance.rs
+// https://cs.android.com/android/platform/superproject/main/+/main:system/security/keystore2/src/maintenance.rs
     val moduleHash: ByteArray by lazy {
-        DeviceAttestationService.CachedAttestationData?.moduleHash
-            ?: runCatching {
-                    // 1. Create a container to hold the sort key (name encoded) and the full data
-                    // (sequence encoded)
-                    data class ModuleEntry(
-                        val nameEncoded: ByteArray, // The sort key
-                        val fullEncoded: ByteArray, // The data to hash
-                    )
-
-                    val modules =
-                        apexInfos.map { (packageName, versionCode) ->
-                            // Create the components
-                            val nameOctet = DEROctetString(packageName.toByteArray(Charsets.UTF_8))
-                            val versionInt = ASN1Integer(versionCode)
-
-                            // Create the Sequence: SEQUENCE { packageName, version }
-                            val vec = ASN1EncodableVector()
-                            vec.add(nameOctet)
-                            vec.add(versionInt)
-                            val sequence = DERSequence(vec)
-
-                            // We store the encoded name separately because Rust sorts ONLY by this
-                            ModuleEntry(
-                                nameEncoded = nameOctet.encoded,
-                                fullEncoded = sequence.encoded,
-                            )
+        loadCachedModuleHash() 
+            ?: DeviceAttestationService.CachedAttestationData?.moduleHash
+            ?: computeAndCacheModuleHash()
+    }
+    
+    private fun loadCachedModuleHash(): ByteArray? {
+        return runCatching {
+            val cacheFile = File(AppConfig.CONFIG_PATH, "module_hash_cache.bin")
+            if (!cacheFile.exists()) return null
+            
+            val cachedHash = cacheFile.readBytes()
+            if (cachedHash.size == 32) {
+                val apexSnapshot = apexInfos.map { it.first to it.second }.toSet()
+                val snapshotFile = File(AppConfig.CONFIG_PATH, "apex_snapshot.txt")
+                
+                if (snapshotFile.exists()) {
+                    val savedSnapshot = snapshotFile.readLines()
+                        .filter { it.contains("=") }
+                        .map { 
+                            val parts = it.split("=")
+                            parts[0] to parts[1].toLongOrNull() ?: 0L
                         }
-
-                    // 2. Sort manually based on the encoded Package Name (lexicographically)
-                    // This mimics the Rust 'impl DerOrd for ModuleInfo' which delegates to
-                    // 'self.name'
-                    val sortedModules =
-                        modules.sortedWith { m1, m2 ->
-                            compareByteArrays(m1.nameEncoded, m2.nameEncoded)
-                        }
-
-                    // 3. Concatenate the full sequences in the specific sorted order
-                    val payloadStream = ByteArrayOutputStream()
-                    sortedModules.forEach { payloadStream.write(it.fullEncoded) }
-                    val payload = payloadStream.toByteArray()
-
-                    // 4. Wrap manually in a DER SET tag (0x31)
-                    // We cannot use DERSet(vector) because it would re-sort incorrectly.
-                    val finalDerSet = encodeAsDerSet(payload)
-
-                    // 5. Compute SHA-256
-                    MessageDigest.getInstance("SHA-256").digest(finalDerSet)
+                        .toSet()
+                    
+                    if (apexSnapshot == savedSnapshot) {
+                        SystemLogger.debug("Using cached module hash (APEX unchanged)")
+                        return cachedHash
+                    } else {
+                        SystemLogger.debug("APEX modules changed, recomputing module hash")
+                    }
                 }
-                .getOrElse {
-                    SystemLogger.error("Failed to compute module hash.", it)
-                    ByteArray(32)
-                }
+            }
+            null
+        }.getOrElse { 
+            SystemLogger.warning("Failed to load cached module hash", it)
+            null 
+        }
+    }
+    
+    private fun computeAndCacheModuleHash(): ByteArray {
+        return runCatching {
+            val hash = computeModuleHashInternal()
+            
+            val cacheFile = File(AppConfig.CONFIG_PATH, "module_hash_cache.bin")
+            cacheFile.parentFile?.mkdirs()
+            cacheFile.writeBytes(hash)
+            
+            val snapshotFile = File(AppConfig.CONFIG_PATH, "apex_snapshot.txt")
+            snapshotFile.writeText(
+                apexInfos.joinToString("\n") { (name, version) -> "$name=$version" }
+            )
+            
+            SystemLogger.debug("Computed and cached module hash: ${hash.toHex()}")
+            hash
+        }.getOrElse {
+            SystemLogger.error("Failed to compute module hash.", it)
+            ByteArray(32)
+        }
+    }
+    
+    private fun computeModuleHashInternal(): ByteArray {
+        data class ModuleEntry(
+            val nameEncoded: ByteArray,
+            val fullEncoded: ByteArray,
+        )
+
+        val modules =
+            apexInfos.map { (packageName, versionCode) ->
+                val nameOctet = DEROctetString(packageName.toByteArray(Charsets.UTF_8))
+                val versionInt = ASN1Integer(versionCode)
+
+                val vec = ASN1EncodableVector()
+                vec.add(nameOctet)
+                vec.add(versionInt)
+                val sequence = DERSequence(vec)
+
+                ModuleEntry(
+                    nameEncoded = nameOctet.encoded,
+                    fullEncoded = sequence.encoded,
+                )
+            }
+
+        val sortedModules =
+            modules.sortedWith { m1, m2 ->
+                compareByteArrays(m1.nameEncoded, m2.nameEncoded)
+            }
+
+        val payloadStream = ByteArrayOutputStream()
+        sortedModules.forEach { payloadStream.write(it.fullEncoded) }
+        val payload = payloadStream.toByteArray()
+
+        val finalDerSet = encodeAsDerSet(payload)
+
+        MessageDigest.getInstance("SHA-256").digest(finalDerSet)
     }
 
     /** Compares two byte arrays lexicographically (unsigned). */

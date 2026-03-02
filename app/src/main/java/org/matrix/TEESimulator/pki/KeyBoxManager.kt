@@ -8,8 +8,19 @@ import java.security.interfaces.RSAPrivateKey
 import java.util.concurrent.ConcurrentHashMap
 import org.matrix.TEESimulator.config.AppConfig
 import org.matrix.TEESimulator.logging.SystemLogger
+import org.matrix.TEESimulator.pki.CertificateChainValidator
+import org.matrix.TEESimulator.pki.ValidationResult
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
+
+data class KeyBoxInfo(
+    val fileName: String,
+    val keyBox: KeyBox,
+    val validation: ValidationResult
+) {
+    val isHardwareAttestation: Boolean get() = !validation.isAospSoftwareChain
+    val securityScore: Int get() = validation.securityScore
+}
 
 /**
  * Manages the loading, parsing, and caching of attestation key stores from XML files.
@@ -31,32 +42,82 @@ import org.xmlpull.v1.XmlPullParserFactory
  */
 object KeyBoxManager {
 
-    // The in-memory cache.
-    // Key: The file name of the key store (e.g., "keybox.xml").
-    // Value: A map of all keys found in that file, keyed by their algorithm name (e.g., "EC",
-    // "RSA").
     private val keyStoreCache = ConcurrentHashMap<String, Map<String, KeyBox>>()
+    
+    private val keyboxSearchPaths = listOf(
+        AppConfig.CONFIG_PATH,
+        "/data/adb/tricky_store",
+        "/vendor/etc",
+        "/system/etc"
+    )
+    
+    private var lastValidationResult: ValidationResult? = null
 
-    /**
-     * Retrieves a specific attestation key (KeyPair and Certificate Chain) for a given algorithm
-     * from a specified key store file.
-     *
-     * This is the primary public API. It transparently handles caching, loading, and parsing.
-     *
-     * @param keyStoreFileName The name of the XML file (e.g., "aosp_keybox.xml").
-     * @param algorithm The algorithm name (e.g., "EC" or "RSA").
-     * @return The requested [KeyBox], or `null` if the file doesn't exist or doesn't contain a key
-     *   for the specified algorithm.
-     */
     fun getAttestationKey(keyStoreFileName: String, algorithm: String): KeyBox? {
-        // Atomically get the parsed key map for the file from the cache.
-        // If it's not in the cache, the `getOrPut` block is executed to parse and store it.
-        val keyMap =
-            keyStoreCache.getOrPut(keyStoreFileName) { parseKeyStoreFile(keyStoreFileName) }
-        SystemLogger.verbose(
-            "Fetching attestation key in $keyStoreFileName with $algorithm algorithm."
-        )
+        val keyMap = keyStoreCache.getOrPut(keyStoreFileName) { 
+            parseKeyStoreFile(keyStoreFileName) 
+        }
+        SystemLogger.verbose("Fetching attestation key in $keyStoreFileName with $algorithm algorithm.")
         return keyMap[algorithm]
+    }
+    
+    fun getBestAvailableKeybox(algorithm: String): KeyBoxInfo? {
+        val keyboxFiles = listOf("hardware_keybox.xml", "keybox.xml", "aosp_keybox.xml")
+        
+        for (fileName in keyboxFiles) {
+            val keybox = findAndLoadKeybox(fileName, algorithm)
+            if (keybox != null) {
+                val validation = CertificateChainValidator.validateChain(keybox.certificates)
+                if (validation.isValid && !validation.isAospSoftwareChain) {
+                    SystemLogger.info("Using hardware attestation keybox: $fileName (score: ${validation.securityScore})")
+                    return KeyBoxInfo(fileName, keybox, validation)
+                }
+            }
+        }
+        
+        for (fileName in keyboxFiles) {
+            val keybox = findAndLoadKeybox(fileName, algorithm)
+            if (keybox != null) {
+                val validation = CertificateChainValidator.validateChain(keybox.certificates)
+                if (validation.isValid) {
+                    SystemLogger.warning("Using fallback keybox: $fileName (AOSP: ${validation.isAospSoftwareChain}, score: ${validation.securityScore})")
+                    return KeyBoxInfo(fileName, keybox, validation)
+                }
+            }
+        }
+        
+        return null
+    }
+    
+    private fun findAndLoadKeybox(fileName: String, algorithm: String): KeyBox? {
+        for (searchPath in keyboxSearchPaths) {
+            val file = File(searchPath, fileName)
+            if (file.exists()) {
+                SystemLogger.debug("Found keybox at: ${file.absolutePath}")
+                return getAttestationKey(fileName, algorithm)
+            }
+        }
+        return null
+    }
+    
+    fun getCurrentKeyboxStatus(): ValidationResult? = lastValidationResult
+    
+    fun validateCurrentKeybox(keyStoreFileName: String): ValidationResult {
+        val keyMap = keyStoreCache.getOrPut(keyStoreFileName) { parseKeyStoreFile(keyStoreFileName) }
+        val ecKey = keyMap[KeyProperties.KEY_ALGORITHM_EC]
+        
+        return if (ecKey != null) {
+            CertificateChainValidator.validateChain(ecKey.certificates).also {
+                lastValidationResult = it
+            }
+        } else {
+            ValidationResult(
+                isValid = false,
+                securityScore = 0,
+                issues = listOf("No EC key found in keybox"),
+                isAospSoftwareChain = false
+            )
+        }
     }
 
     /**

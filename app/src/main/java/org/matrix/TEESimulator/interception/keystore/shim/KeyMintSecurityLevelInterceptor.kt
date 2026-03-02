@@ -25,6 +25,7 @@ import org.matrix.TEESimulator.interception.keystore.KeyIdentifier
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.pki.CertificateGenerator
 import org.matrix.TEESimulator.pki.CertificateHelper
+import org.matrix.TEESimulator.util.TeeTimingSimulator
 
 class KeyMintSecurityLevelInterceptor(
     private val original: IKeystoreSecurityLevel,
@@ -210,9 +211,10 @@ class KeyMintSecurityLevelInterceptor(
             return TransactionResult.Continue
         }
 
-        SystemLogger.info("[TX_ID: $txId] Creating SOFTWARE operation for KeyId $nspace.")
+            SystemLogger.info("[TX_ID: $txId] Creating SOFTWARE operation for KeyId $nspace.")
+            TeeTimingSimulator.simulateDelay(TeeTimingSimulator.OperationType.OPERATION_CREATE)
 
-        val params = data.createTypedArray(KeyParameter.CREATOR)!!
+            val params = data.createTypedArray(KeyParameter.CREATOR)!!
         val parsedParams = KeyMintAttestation(params)
 
         val softwareOperation = SoftwareOperation(txId, generatedKeyInfo.keyPair, parsedParams)
@@ -284,7 +286,7 @@ class KeyMintSecurityLevelInterceptor(
             }
     }
 
-    private fun doSoftwareKeyGen(
+private fun doSoftwareKeyGen(
         callingUid: Int,
         keyDescriptor: KeyDescriptor,
         attestationKey: KeyDescriptor?,
@@ -292,6 +294,7 @@ class KeyMintSecurityLevelInterceptor(
         keyId: KeyIdentifier,
         isAttestKeyRequest: Boolean,
     ): TransactionResult {
+        TeeTimingSimulator.simulateDelay(TeeTimingSimulator.OperationType.KEY_GENERATION)
         keyDescriptor.nspace = secureRandom.nextLong()
         SystemLogger.info("Generating software key for ${keyDescriptor.alias}[${keyDescriptor.nspace}].")
 
