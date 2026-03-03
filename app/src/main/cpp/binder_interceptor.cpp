@@ -329,7 +329,11 @@ protected:
             return DEAD_OBJECT;
         }
 
-        // 4. Delegate to the Interceptor logic
+        if (!g_interceptor_instance) {
+            LOGE("[TX_ID: %" PRIu64 "] Interceptor instance is null, forwarding directly.", info.transaction_id);
+            return real_target->transact(info.transaction_code, data, reply, flags);
+        }
+
         status_t status = OK;
         bool interceptorManagedFlow = g_interceptor_instance->processInterceptedTransaction(
             info.transaction_id, real_target, info.transaction_code, data, reply, flags, status);
@@ -399,6 +403,12 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
             // This is safe because we are holding a strong reference.
             wp<BBinder> wp_target = target_binder_ptr;
 
+            if (!g_interceptor_instance) {
+                LOGE("[Hook] Interceptor instance is null, cannot check registry.");
+                target_binder_ptr->decStrong(nullptr);
+                return;
+            }
+
             if (g_interceptor_instance->isBinderIntercepted(wp_target)) {
                 info.transaction_code = txn_data->code;
                 info.target_binder = wp_target; // Assign the valid weak pointer
@@ -415,7 +425,11 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
 
         LOGV("[Hook] Hijacking Transaction %" PRIu64 " (Code: %u)", tx_id, txn_data->code);
 
-        // Rewrite the destination to our Stub
+        if (!g_stub_instance) {
+            LOGE("[Hook] Stub instance is null, cannot hijack transaction.");
+            return;
+        }
+
         txn_data->target.ptr = reinterpret_cast<uintptr_t>(g_stub_instance->getWeakRefs());
         txn_data->cookie = reinterpret_cast<uintptr_t>(g_stub_instance.get());
         txn_data->code = intercept::kBackdoorCode;

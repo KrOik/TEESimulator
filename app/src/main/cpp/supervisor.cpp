@@ -37,9 +37,13 @@ int main(int argc, char *argv[]) {
         }
 
         if (pid == 0) {
-            // Child: become the daemon
-            prctl(PR_SET_PDEATHSIG, SIGKILL); // Die if parent dies
-            execv(daemon_path, daemon_argv);
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            const char *daemon_path_safe = daemon_path ? daemon_path : "";
+            if (daemon_path_safe[0] == '\0') {
+                fprintf(stderr, "Error: daemon path is empty or null\n");
+                _exit(127);
+            }
+            execv(daemon_path_safe, daemon_argv);
             perror("execv failed");
             _exit(127);
         }

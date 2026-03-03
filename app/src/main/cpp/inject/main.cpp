@@ -149,8 +149,11 @@ public:
         std::vector<lsplt::MapInfo> remote_map = lsplt::MapInfo::Scan(std::to_string(pid_));
 
         if (auto close_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "close")) {
+            if (!libc_return_addr_) {
+                LOGW("libc_return_addr is null, cannot close remote fd safely.");
+                return;
+            }
             std::vector<uintptr_t> args = {static_cast<uintptr_t>(fd_)};
-            // Perform a remote call to close the file descriptor.
             remote_call(pid_, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr_, args);
         } else {
             LOGW("Failed to find remote 'close' function to cleanup transferred FD.");
@@ -893,6 +896,10 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
         if (!libc_return_addr) {
             LOGE("Failed to find a suitable return address for '%s' in target process %d.", constants::kLibcModule,
                  pid);
+            return false;
+        }
+        if (libc_return_addr == nullptr) {
+            LOGE("libc_return_addr resolved to null for target process %d.", pid);
             return false;
         }
         LOGD("Found libc return address: %p", reinterpret_cast<void *>(libc_return_addr));
