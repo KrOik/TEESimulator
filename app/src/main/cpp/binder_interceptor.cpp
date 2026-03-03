@@ -384,39 +384,54 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
     // Check 3: Normal interception based on registry of monitored binders
     } else {
         // Safe casting based on Binder driver ABI
+        // Defensive: Validate the pointer before reinterpret_cast
+        if (txn_data->target.ptr == 0) {
+            LOGE("[Hook] Invalid null target pointer in transaction data.");
+            return;
+        }
+
         RefBase::weakref_type *weak_ref = reinterpret_cast<RefBase::weakref_type *>(txn_data->target.ptr);
 
-        // Try to acquire a temporary strong reference to check the object safely
-        if (weak_ref && weak_ref->attemptIncStrong(nullptr)) {
-            // The raw pointer to the binder object itself is stored in the cookie
-            BBinder *target_binder_ptr = reinterpret_cast<BBinder *>(txn_data->cookie);
-            
-            // Null check for safety - cookie could be invalid
-            // If null, we must still release the strong reference we acquired
-            if (!target_binder_ptr) {
-                LOGE("[Hook] Null binder pointer in transaction cookie, releasing strong ref and skipping.");
-                weak_ref->decStrong(nullptr);
-                return;
-            }
-
-            // Create a weak pointer for the lookup and to store in our context map.
-            // This is safe because we are holding a strong reference.
-            wp<BBinder> wp_target = target_binder_ptr;
-
-            if (!g_interceptor_instance) {
-                LOGE("[Hook] Interceptor instance is null, cannot check registry.");
-                target_binder_ptr->decStrong(nullptr);
-                return;
-            }
-
-            if (g_interceptor_instance->isBinderIntercepted(wp_target)) {
-                info.transaction_code = txn_data->code;
-                info.target_binder = wp_target; // Assign the valid weak pointer
-                hijack = true;
-            }
-            // Manually release the temporary strong reference we acquired at the start.
-            target_binder_ptr->decStrong(nullptr);
+        // Defensive: Validate weak_ref before dereferencing
+        if (!weak_ref) {
+            LOGE("[Hook] Null weak_ref after reinterpret_cast, skipping transaction.");
+            return;
         }
+
+        // Try to acquire a temporary strong reference to check the object safely
+        if (!weak_ref->attemptIncStrong(nullptr)) {
+            LOGV("[Hook] attemptIncStrong failed, object may be destroyed.");
+            return;
+        }
+
+        // The raw pointer to the binder object itself is stored in the cookie
+        BBinder *target_binder_ptr = reinterpret_cast<BBinder *>(txn_data->cookie);
+
+        // Null check for safety - cookie could be invalid
+        // If null, we must still release the strong reference we acquired
+        if (!target_binder_ptr) {
+            LOGE("[Hook] Null binder pointer in transaction cookie, releasing strong ref and skipping.");
+            weak_ref->decStrong(nullptr);
+            return;
+        }
+
+        // Create a weak pointer for the lookup and to store in our context map.
+        // This is safe because we are holding a strong reference.
+        wp<BBinder> wp_target = target_binder_ptr;
+
+        if (!g_interceptor_instance) {
+            LOGE("[Hook] Interceptor instance is null, cannot check registry.");
+            target_binder_ptr->decStrong(nullptr);
+            return;
+        }
+
+        if (g_interceptor_instance->isBinderIntercepted(wp_target)) {
+            info.transaction_code = txn_data->code;
+            info.target_binder = wp_target; // Assign the valid weak pointer
+            hijack = true;
+        }
+        // Manually release the temporary strong reference we acquired at the start.
+        target_binder_ptr->decStrong(nullptr);
     }
 
     if (hijack) {
@@ -430,7 +445,16 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
             return;
         }
 
-        txn_data->target.ptr = reinterpret_cast<uintptr_t>(g_stub_instance->getWeakRefs());
+        // Critical: getWeakRefs() must return a valid pointer for the stub to work.
+        // The stub implementation in stub_utils.cpp uses LOG_ALWAYS_FATAL if called,
+        // so we must ensure the real libutils implementation is linked instead.
+        auto *weak_refs = g_stub_instance->getWeakRefs();
+        if (!weak_refs) {
+            LOGE("[Hook] Stub getWeakRefs() returned null - this indicates a stub implementation is linked instead of real libutils. Cannot hijack.");
+            return;
+        }
+
+        txn_data->target.ptr = reinterpret_cast<uintptr_t>(weak_refs);
         txn_data->cookie = reinterpret_cast<uintptr_t>(g_stub_instance.get());
         txn_data->code = intercept::kBackdoorCode;
 

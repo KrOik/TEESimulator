@@ -892,7 +892,7 @@ std::string parse_status(int status) {
  */
 std::string get_program(int pid) {
     std::string exe_path = "/proc/" + std::to_string(pid) + "/exe";
-    char resolved_path[kMaxPathLengthInternal + 1]; // +1 for null terminator.
+    char resolved_path[kMaxPathLengthInternal + 1];
 
     ssize_t link_size = readlink(exe_path.c_str(), resolved_path, kMaxPathLengthInternal);
     if (link_size == -1) {
@@ -900,7 +900,12 @@ std::string get_program(int pid) {
         return "";
     }
 
-    resolved_path[link_size] = '\0'; // Null-terminate the string.
+    if (link_size >= static_cast<ssize_t>(kMaxPathLengthInternal)) {
+        LOGW("Executable path for PID %d was truncated (exceeded %zu bytes)", pid, kMaxPathLengthInternal);
+        link_size = kMaxPathLengthInternal - 1;
+    }
+
+    resolved_path[link_size] = '\0';
     return std::string(resolved_path);
 }
 

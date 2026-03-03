@@ -20,11 +20,20 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Forward termination signals to exit cleanly
+    if (argv[1] == nullptr) {
+        fprintf(stderr, "Error: daemon path argument is null\n");
+        return 1;
+    }
+
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
 
     const char *daemon_path = argv[1];
+    if (daemon_path[0] == '\0') {
+        fprintf(stderr, "Error: daemon path is empty\n");
+        return 1;
+    }
+
     char **daemon_argv = &argv[1];
 
     while (!should_exit) {
@@ -32,30 +41,23 @@ int main(int argc, char *argv[]) {
 
         if (pid < 0) {
             perror("fork failed");
-            usleep(100000); // 100ms backoff on fork failure
+            usleep(100000);
             continue;
         }
 
         if (pid == 0) {
             prctl(PR_SET_PDEATHSIG, SIGKILL);
-            const char *daemon_path_safe = daemon_path ? daemon_path : "";
-            if (daemon_path_safe[0] == '\0') {
-                fprintf(stderr, "Error: daemon path is empty or null\n");
-                _exit(127);
-            }
-            execv(daemon_path_safe, daemon_argv);
+            execv(daemon_path, daemon_argv);
             perror("execv failed");
             _exit(127);
         }
 
-        // Parent: wait for child to exit
         int status;
         waitpid(pid, &status, 0);
 
         if (should_exit) break;
 
-        // Add small delay to prevent CPU spinning on rapid crash loops
-        usleep(100000); // 100ms delay between restarts
+        usleep(100000);
     }
 
     return 0;

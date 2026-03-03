@@ -898,10 +898,6 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
                  pid);
             return false;
         }
-        if (libc_return_addr == nullptr) {
-            LOGE("libc_return_addr resolved to null for target process %d.", pid);
-            return false;
-        }
         LOGD("Found libc return address: %p", reinterpret_cast<void *>(libc_return_addr));
 
         // 6. Attempt to transfer the library's file descriptor to the remote process.
