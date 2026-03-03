@@ -120,15 +120,24 @@ abstract class BinderInterceptor : Binder() {
                 else -> return super.onTransact(code, data, reply, flags)
             }
 
-        // The reply parcel is guaranteed to be non-null for our custom transactions.
-        writeResultToReply(result, reply!!)
+        // The reply parcel should be non-null for our custom transactions.
+        // Safety check to prevent NPE
+        if (reply == null) {
+            SystemLogger.error("Received null reply parcel in onTransact for code=$code")
+            return false
+        }
+        writeResultToReply(result, reply)
         return true
     }
 
     /** Decodes the parcel for a pre-transaction hook and calls the user-overridable method. */
     private fun handlePreTransact(txId: Long, data: Parcel): TransactionResult {
         // The native hook marshals the original transaction's arguments into the data parcel.
-        val target = data.readStrongBinder()!!
+        val targetBinder = data.readStrongBinder()
+        if (targetBinder == null) {
+            SystemLogger.error("[TX_ID: $txId] Null target binder in pre-transact")
+            return TransactionResult.SkipTransaction
+        }
         val transactionCode = data.readInt()
         val transactionFlags = data.readInt()
         val callingUid = data.readInt()
@@ -142,7 +151,7 @@ abstract class BinderInterceptor : Binder() {
             transactionData.setDataPosition(0)
             onPreTransact(
                 txId,
-                target,
+                targetBinder,
                 transactionCode,
                 transactionFlags,
                 callingUid,
@@ -156,7 +165,11 @@ abstract class BinderInterceptor : Binder() {
 
     /** Decodes the parcel for a post-transaction hook and calls the user-overridable method. */
     private fun handlePostTransact(txId: Long, data: Parcel): TransactionResult {
-        val target = data.readStrongBinder()!!
+        val targetBinder = data.readStrongBinder()
+        if (targetBinder == null) {
+            SystemLogger.error("[TX_ID: $txId] Null target binder in post-transact")
+            return TransactionResult.SkipTransaction
+        }
         val transactionCode = data.readInt()
         val transactionFlags = data.readInt()
         val callingUid = data.readInt()
@@ -183,7 +196,7 @@ abstract class BinderInterceptor : Binder() {
 
             onPostTransact(
                 txId,
-                target,
+                targetBinder,
                 transactionCode,
                 transactionFlags,
                 callingUid,

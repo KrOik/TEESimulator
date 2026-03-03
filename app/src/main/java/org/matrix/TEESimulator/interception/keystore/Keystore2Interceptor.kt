@@ -91,7 +91,8 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
         data: Parcel,
     ): TransactionResult {
         if (code == LIST_ENTRIES_TRANSACTION || code == LIST_ENTRIES_BATCHED_TRANSACTION) {
-            logTransaction(txId, transactionNames[code]!!, callingUid, callingPid, true)
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, txName, callingUid, callingPid, true)
 
             val packages = ConfigurationManager.getPackagesForUid(callingUid).joinToString()
             val isGMS = packages.contains("com.google.android.gms")
@@ -106,7 +107,8 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                 code == DELETE_KEY_TRANSACTION ||
                 code == UPDATE_SUBCOMPONENT_TRANSACTION
         ) {
-            logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, txName, callingUid, callingPid)
 
             if (ConfigurationManager.shouldSkipUid(callingUid))
                 return TransactionResult.ContinueAndSkipPost
@@ -179,8 +181,9 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
         if (target != keystoreService || reply == null || InterceptorUtils.hasException(reply))
             return TransactionResult.SkipTransaction
 
-        if (code == LIST_ENTRIES_TRANSACTION || code == LIST_ENTRIES_BATCHED_TRANSACTION) {
-            logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
+if (code == LIST_ENTRIES_TRANSACTION || code == LIST_ENTRIES_BATCHED_TRANSACTION) {
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, "post-$txName", callingUid, callingPid)
 
             return runCatching {
                     val isBatchMode = code == LIST_ENTRIES_BATCHED_TRANSACTION
@@ -192,8 +195,9 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                     InterceptorUtils.createTypedArrayReply(updatedKeyDescriptors)
                 }
                 .getOrElse {
+                    val failedTxName = transactionNames[code] ?: "unknown"
                     SystemLogger.error(
-                        "[TX_ID: $txId] Failed to update the result of ${transactionNames[code]!!}.",
+                        "[TX_ID: $txId] Failed to update the result of $failedTxName.",
                         it,
                     )
                     TransactionResult.SkipTransaction
@@ -204,15 +208,19 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                 data.readTypedObject(KeyDescriptor.CREATOR)
                     ?: return TransactionResult.SkipTransaction
 
-            logTransaction(
+logTransaction(
                 txId,
-                "post-${transactionNames[code]!!} ${keyDescriptor.alias}",
+                "post-${transactionNames[code] ?: "unknown"} ${keyDescriptor.alias}",
                 callingUid,
                 callingPid,
             )
 
             runCatching {
-                    val response = reply.readTypedObject(KeyEntryResponse.CREATOR)!!
+                    val response = reply.readTypedObject(KeyEntryResponse.CREATOR)
+                    if (response == null) {
+                        SystemLogger.error("[TX_ID: $txId] Null KeyEntryResponse in reply")
+                        return TransactionResult.SkipTransaction
+                    }
                     val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
 
                     val authorizations = response.metadata.authorizations

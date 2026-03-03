@@ -97,18 +97,20 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
         callingPid: Int,
         data: Parcel,
     ): TransactionResult {
-        // This interceptor only needs to act on pre-transaction for software key generation.
+// This interceptor only needs to act on pre-transaction for software key generation.
         // Handle 'generate' mode interceptions using the handler map.
         if (ConfigurationManager.shouldGenerate(callingUid)) {
             generateKeyHandlers[code]?.let { handler ->
-                logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
+                val txName = transactionNames[code] ?: "unknown"
+                logTransaction(txId, txName, callingUid, callingPid)
                 return handler(txId, callingUid, callingPid, data)
             }
         }
 
         // Handle 'patch' mode interceptions for the 'get' transaction.
         if (ConfigurationManager.shouldPatch(callingUid) && code == GET_TRANSACTION) {
-            logTransaction(txId, transactionNames[code]!!, callingUid, callingPid, true)
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, txName, callingUid, callingPid, true)
             return TransactionResult.Continue
         }
 
@@ -123,12 +125,17 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
         return TransactionResult.ContinueAndSkipPost
     }
 
-    private fun handleGenerateKey(txId: Long, uid: Int, pid: Int, data: Parcel): TransactionResult {
+private fun handleGenerateKey(txId: Long, uid: Int, pid: Int, data: Parcel): TransactionResult {
         return runCatching {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val callback =
                     IKeystoreKeyCharacteristicsCallback.Stub.asInterface(data.readStrongBinder())
-                val alias = InterceptorUtils.extractAlias(data.readString()!!)
+                val aliasStr = data.readString()
+                if (aliasStr == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null alias in handleGenerateKey")
+                    return TransactionResult.ContinueAndSkipPost
+                }
+                val alias = InterceptorUtils.extractAlias(aliasStr)
                 val keyId = KeyIdentifier(uid, alias)
 
                 // Read and parse the key generation arguments.
@@ -155,7 +162,7 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
             }
     }
 
-    private fun handleGetKeyCharacteristics(
+private fun handleGetKeyCharacteristics(
         txId: Long,
         uid: Int,
         pid: Int,
@@ -165,7 +172,12 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val callback =
                     IKeystoreKeyCharacteristicsCallback.Stub.asInterface(data.readStrongBinder())
-                val alias = InterceptorUtils.extractAlias(data.readString()!!)
+                val aliasStr = data.readString()
+                if (aliasStr == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null alias in handleGetKeyCharacteristics")
+                    return TransactionResult.ContinueAndSkipPost
+                }
+                val alias = InterceptorUtils.extractAlias(aliasStr)
                 val keyId = KeyIdentifier(uid, alias)
 
                 val params =
@@ -194,11 +206,16 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
             }
     }
 
-    private fun handleExportKey(txId: Long, uid: Int, pid: Int, data: Parcel): TransactionResult {
+private fun handleExportKey(txId: Long, uid: Int, pid: Int, data: Parcel): TransactionResult {
         return runCatching {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val callback = IKeystoreExportKeyCallback.Stub.asInterface(data.readStrongBinder())
-                val alias = InterceptorUtils.extractAlias(data.readString()!!)
+                val aliasStr = data.readString()
+                if (aliasStr == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null alias in handleExportKey")
+                    return TransactionResult.ContinueAndSkipPost
+                }
+                val alias = InterceptorUtils.extractAlias(aliasStr)
                 val keyId = KeyIdentifier(uid, alias)
 
                 val params =
@@ -231,12 +248,17 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
             }
     }
 
-    private fun handleAttestKey(txId: Long, uid: Int, pid: Int, data: Parcel): TransactionResult {
+private fun handleAttestKey(txId: Long, uid: Int, pid: Int, data: Parcel): TransactionResult {
         return runCatching {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val callback =
                     IKeystoreCertificateChainCallback.Stub.asInterface(data.readStrongBinder())
-                val alias = InterceptorUtils.extractAlias(data.readString()!!)
+                val aliasStr = data.readString()
+                if (aliasStr == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null alias in handleAttestKey")
+                    return TransactionResult.ContinueAndSkipPost
+                }
+                val alias = InterceptorUtils.extractAlias(aliasStr)
                 val keyId = KeyIdentifier(uid, alias)
 
                 // Get the attestation challenge from the arguments.
@@ -358,11 +380,15 @@ object KeystoreInterceptor : AbstractKeystoreInterceptor() {
                         // The CA chain is everything *except* the first element (the leaf).
                         val caCerts = cachedChain.drop(1)
                         val caCertsBytes = CertificateHelper.certificatesToByteArray(caCerts)
+                        if (caCertsBytes == null) {
+                            SystemLogger.error("[TX_ID: $txId] Failed to serialize CA certificates")
+                            return TransactionResult.SkipTransaction
+                        }
 
                         SystemLogger.info(
                             "[TX_ID: $txId] Returning cached CA chain for alias '$extractedAlias'."
                         )
-                        InterceptorUtils.createByteArrayReply(caCertsBytes!!)
+                        InterceptorUtils.createByteArrayReply(caCertsBytes)
                     } else {
                         SystemLogger.warning(
                             "[TX_ID: $txId] No cached chain found for CA request on alias '$extractedAlias'. Skipping."

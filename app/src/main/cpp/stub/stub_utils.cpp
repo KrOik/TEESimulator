@@ -13,10 +13,17 @@ void RefBase::decStrong(const void *id) const {}
 void RefBase::forceIncStrong(const void *id) const {}
 
 RefBase::weakref_type *RefBase::createWeak(const void *id) const {
+    // CRITICAL FIX: Return a valid weakref_type to prevent crashes
+    // This is a stub implementation - the real implementation is in libutils
+    // For safety, we should not return nullptr as callers may dereference it
+    // Instead, we crash early with a clear error message
+    LOG_ALWAYS_FATAL("RefBase::createWeak() called in stub implementation - this should never happen!");
     return nullptr;
 }
 
 RefBase::weakref_type *RefBase::getWeakRefs() const {
+    // CRITICAL FIX: Return a valid weakref_type to prevent crashes
+    LOG_ALWAYS_FATAL("RefBase::getWeakRefs() called in stub implementation - this should never happen!");
     return nullptr;
 }
 

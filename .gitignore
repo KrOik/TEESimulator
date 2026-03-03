@@ -78,3 +78,9 @@ __pycache__/
 
 # VS Code
 .vscode/
+
+# Windows temp files (FINDSTR errors)
+nul
+
+# Sisyphus agent files
+.sisyphus/

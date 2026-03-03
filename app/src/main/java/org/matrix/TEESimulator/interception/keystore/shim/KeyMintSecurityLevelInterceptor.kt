@@ -49,22 +49,29 @@ class KeyMintSecurityLevelInterceptor(
     ): TransactionResult {
         val shouldSkip = ConfigurationManager.shouldSkipUid(callingUid)
 
-        when (code) {
+when (code) {
             GENERATE_KEY_TRANSACTION -> {
-                logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
+                val txName = transactionNames[code] ?: "unknown"
+                logTransaction(txId, txName, callingUid, callingPid)
 
                 if (!shouldSkip) return handleGenerateKey(txId, callingUid, data)
             }
             CREATE_OPERATION_TRANSACTION -> {
-                logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
+                val txName = transactionNames[code] ?: "unknown"
+                logTransaction(txId, txName, callingUid, callingPid)
 
                 if (!shouldSkip) return handleCreateOperation(txId, callingUid, data)
             }
             IMPORT_KEY_TRANSACTION -> {
-                logTransaction(txId, transactionNames[code]!!, callingUid, callingPid)
+                val txName = transactionNames[code] ?: "unknown"
+                logTransaction(txId, txName, callingUid, callingPid)
 
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                if (keyDescriptor == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null keyDescriptor in IMPORT_KEY_TRANSACTION")
+                    return TransactionResult.ContinueAndSkipPost
+                }
                 SystemLogger.info(
                     "[TX_ID: $txId] Forward to post-importKey hook for ${keyDescriptor.alias}[${keyDescriptor.nspace}]"
                 )
@@ -103,8 +110,9 @@ class KeyMintSecurityLevelInterceptor(
         if (resultCode != 0 || reply == null || InterceptorUtils.hasException(reply))
             return TransactionResult.SkipTransaction
 
-        if (code == IMPORT_KEY_TRANSACTION) {
-            logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
+if (code == IMPORT_KEY_TRANSACTION) {
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, "post-$txName", callingUid, callingPid)
 
             data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
             val keyDescriptor =
@@ -119,11 +127,20 @@ class KeyMintSecurityLevelInterceptor(
             }
             attestationKeys.remove(keyId)
         } else if (code == CREATE_OPERATION_TRANSACTION) {
-            logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, "post-$txName", callingUid, callingPid)
 
             data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-            val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
-            val params = data.createTypedArray(KeyParameter.CREATOR)!!
+            val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+            if (keyDescriptor == null) {
+                SystemLogger.error("[TX_ID: $txId] Null keyDescriptor in CREATE_OPERATION_TRANSACTION")
+                return TransactionResult.SkipTransaction
+            }
+            val params = data.createTypedArray(KeyParameter.CREATOR)
+            if (params == null) {
+                SystemLogger.error("[TX_ID: $txId] Null params in CREATE_OPERATION_TRANSACTION")
+                return TransactionResult.SkipTransaction
+            }
             val parsedParams = KeyMintAttestation(params)
             val forced = data.readBoolean()
             if (forced)
@@ -131,7 +148,11 @@ class KeyMintSecurityLevelInterceptor(
                     "[TX_ID: $txId] Current operation has a very high pruning power."
                 )
             val response: CreateOperationResponse =
-                reply.readTypedObject(CreateOperationResponse.CREATOR)!!
+                reply.readTypedObject(CreateOperationResponse.CREATOR)
+            if (response == null) {
+                SystemLogger.error("[TX_ID: $txId] Null CreateOperationResponse")
+                return TransactionResult.SkipTransaction
+            }
             SystemLogger.verbose(
                 "[TX_ID: $txId] CreateOperationResponse: ${response.iOperation} ${response.operationChallenge}"
             )
@@ -153,8 +174,9 @@ class KeyMintSecurityLevelInterceptor(
                     }
                 }
             }
-        } else if (code == GENERATE_KEY_TRANSACTION) {
-            logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
+} else if (code == GENERATE_KEY_TRANSACTION) {
+            val txName = transactionNames[code] ?: "unknown"
+            logTransaction(txId, "post-$txName", callingUid, callingPid)
 
             val metadata: KeyMetadata =
                 reply.readTypedObject(KeyMetadata.CREATOR)
@@ -170,8 +192,16 @@ class KeyMintSecurityLevelInterceptor(
 
                 // Cache the newly patched chain to ensure consistency across subsequent API calls.
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
-                val key = metadata.key!!
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                if (keyDescriptor == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null keyDescriptor in GENERATE_KEY_TRANSACTION")
+                    return TransactionResult.SkipTransaction
+                }
+                val key = metadata.key
+                if (key == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null key in metadata")
+                    return TransactionResult.SkipTransaction
+                }
                 val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
                 CertificateHelper.updateCertificateChain(metadata, newChain).getOrThrow()
 
@@ -188,13 +218,17 @@ class KeyMintSecurityLevelInterceptor(
         return TransactionResult.SkipTransaction
     }
 
-    private fun handleCreateOperation(
+private fun handleCreateOperation(
         txId: Long,
         callingUid: Int,
         data: Parcel,
     ): TransactionResult {
         data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
+        val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+        if (keyDescriptor == null) {
+            SystemLogger.error("[TX_ID: $txId] Null keyDescriptor in handleCreateOperation")
+            return TransactionResult.ContinueAndSkipPost
+        }
 
         // An operation must use the KEY_ID domain.
         if (keyDescriptor.domain != Domain.KEY_ID) {
@@ -214,7 +248,11 @@ class KeyMintSecurityLevelInterceptor(
             SystemLogger.info("[TX_ID: $txId] Creating SOFTWARE operation for KeyId $nspace.")
             TeeTimingSimulator.simulateDelay(TeeTimingSimulator.OperationType.OPERATION_CREATE)
 
-            val params = data.createTypedArray(KeyParameter.CREATOR)!!
+            val params = data.createTypedArray(KeyParameter.CREATOR)
+        if (params == null) {
+            SystemLogger.error("[TX_ID: $txId] Null params in handleCreateOperation")
+            return TransactionResult.ContinueAndSkipPost
+        }
         val parsedParams = KeyMintAttestation(params)
 
         val softwareOperation = SoftwareOperation(txId, generatedKeyInfo.keyPair, parsedParams)
@@ -235,15 +273,23 @@ class KeyMintSecurityLevelInterceptor(
             return TransactionResult.ContinueAndSkipPost
         }
 
-        return runCatching {
+return runCatching {
                 data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
+                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+                if (keyDescriptor == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null keyDescriptor in handleGenerateKey")
+                    return TransactionResult.ContinueAndSkipPost
+                }
                 val attestationKey = data.readTypedObject(KeyDescriptor.CREATOR)
 
                 SystemLogger.debug(
                     "Handling generateKey ${keyDescriptor.alias}, attestKey=${attestationKey?.alias}"
                 )
-                val params = data.createTypedArray(KeyParameter.CREATOR)!!
+                val params = data.createTypedArray(KeyParameter.CREATOR)
+                if (params == null) {
+                    SystemLogger.error("[TX_ID: $txId] Null params in handleGenerateKey")
+                    return TransactionResult.ContinueAndSkipPost
+                }
                 val parsedParams = KeyMintAttestation(params)
                 val isAttestKeyRequest = parsedParams.isAttestKey()
 

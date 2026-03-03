@@ -386,6 +386,14 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
         if (weak_ref && weak_ref->attemptIncStrong(nullptr)) {
             // The raw pointer to the binder object itself is stored in the cookie
             BBinder *target_binder_ptr = reinterpret_cast<BBinder *>(txn_data->cookie);
+            
+            // Null check for safety - cookie could be invalid
+            // If null, we must still release the strong reference we acquired
+            if (!target_binder_ptr) {
+                LOGE("[Hook] Null binder pointer in transaction cookie, releasing strong ref and skipping.");
+                weak_ref->decStrong(nullptr);
+                return;
+            }
 
             // Create a weak pointer for the lookup and to store in our context map.
             // This is safe because we are holding a strong reference.

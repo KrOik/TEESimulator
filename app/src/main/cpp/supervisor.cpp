@@ -50,7 +50,8 @@ int main(int argc, char *argv[]) {
 
         if (should_exit) break;
 
-        // Instant restart - no delay
+        // Add small delay to prevent CPU spinning on rapid crash loops
+        usleep(100000); // 100ms delay between restarts
     }
 
     return 0;
